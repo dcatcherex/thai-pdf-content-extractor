@@ -22,17 +22,19 @@ You cannot fix this by extracting text harder. But the **rendered page image is 
 ## 2. Install
 
 ```bash
-pip install pymupdf python-dotenv      # always required
+pip install -r requirements.txt        # everything (all three providers)
 
-# then only the providers you'll actually use:
+# or only what you need:
+pip install pymupdf python-dotenv      # always required
 pip install anthropic                  # for Claude
 pip install openai                     # for GPT
-pip install google-genai               # for Gemini
+pip install google-genai               # for Gemini (keep it up to date: newer
+                                       # thinking/flex settings need a recent version)
 ```
 
 ### API keys
 
-Create a file named `.env` in the same folder as the scripts:
+Copy `.env.example` to `.env` in the same folder as the scripts and fill it in:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
@@ -40,9 +42,17 @@ OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=...
 ```
 
-All scripts load this automatically. You only need keys for providers you use.
+All scripts load this automatically. You only need keys for providers you use. Keys in `.env`
+**override** any same-named key saved in your system (Windows) environment.
 
-**Important:** add `.env` to your `.gitignore` so you never commit keys.
+**Check your keys** before a run:
+
+```bash
+python check_keys.py          # which key each provider will use (last 4 chars) and where it came from
+python check_keys.py --ping   # also asks each provider whether the key works (free call)
+```
+
+**Important:** `.env` is already listed in `.gitignore`, so it is never committed. Keep it that way.
 
 Where to get keys:
 | Provider | Get key from |
@@ -53,7 +63,7 @@ Where to get keys:
 
 ---
 
-## 3. The four scripts
+## 3. The scripts
 
 | Script | What it does | When to use |
 |--------|--------------|-------------|
@@ -61,6 +71,7 @@ Where to get keys:
 | `compare.py` | Runs the same pages through multiple providers side by side | Before choosing a provider |
 | `extractor.py` | Extracts pages one at a time, live | Testing, small jobs, splitting cost across providers |
 | `batch_extractor.py` | Submits all pages as one async job at **50% off** | Large documents where you can wait |
+| `check_keys.py` | Shows/tests which API key each provider uses | Setup, or when you get an "API key" error |
 
 ---
 
@@ -179,7 +190,7 @@ Batch mode submits everything as one asynchronous job to Anthropic at **half pri
 # Tonight — submit and walk away:
 python batch_extractor.py doc.pdf --out ./out_batch --no-wait
 
-# Wait for "Submitted. batch_id=msgbatch_..." to print, THEN you can shut down.
+# Wait for "Submitted 1 batch(es): ['msgbatch_...']" to print, THEN you can shut down.
 
 # In the morning — same command, without --no-wait:
 python batch_extractor.py doc.pdf --out ./out_batch
@@ -202,7 +213,7 @@ once everything has been submitted, and the follow-up run still polls and retrie
 python batch_extractor.py doc.pdf --out ./test --pages 0-1 --no-wait
 ```
 
-Confirm it prints a `batch_id` and creates `test/batch.json`.
+Confirm it prints `Submitted 1 batch(es)` and creates `test/batch.json`.
 
 ---
 
@@ -268,7 +279,7 @@ the vision model, not anything saved to disk.
   "title": "คู่มือผู้ดำเนินการฯ",
   "publisher": "กรมสนับสนุนบริการสุขภาพ",
   "extracted_at": "2026-07-12",
-  "model": "claude-sonnet-4-6"
+  "model": "claude-sonnet-5"
 }
 ```
 
@@ -344,7 +355,7 @@ The repeating footer (page number + book title + department) is **stripped from 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--dpi` | `150` | Resolution to price |
-| `--pages` | all | Range to price |
+| `--pages` | all | `pdf_index` range/list to price, e.g. `0-199` |
 | `--out-tokens` | `750-1100` | Estimated output tokens per page |
 
 ---
@@ -356,7 +367,10 @@ The repeating footer (page number + book title + department) is **stripped from 
 | `Unsupported parameter: 'max_tokens'` | Newer OpenAI models renamed it. Already handled — the code retries with `max_completion_tokens`. If you still see it, update the `openai` package. |
 | `503 UNAVAILABLE ... high demand` (Gemini) | Transient overload. The code retries automatically. If it persists, try later or use another provider. |
 | Tables come back as **empty dashes** | The model drew the frame but didn't read the cells. Raise `--dpi` to 200, or switch to a stronger model. This is the main quality risk — check for it in `compare.py`. |
-| Missing API key error | Check `.env` is in the same folder as the scripts and the variable name matches exactly (e.g. `ANTHROPIC_API_KEY`). |
+| Missing API key error | Check `.env` is in the same folder as the scripts and the variable name matches exactly (e.g. `ANTHROPIC_API_KEY`). Run `python check_keys.py`. |
+| `API key not valid` / `API_KEY_INVALID` | The provider rejected the key itself. Run `python check_keys.py --ping`: compare the last 4 characters with the key in the provider's console, and create a new key if it was deleted or restricted. (A stale system-environment key can no longer override `.env`.) |
+| Validation error mentioning `thinking_level` or `service_tier` (Gemini) | Your `google-genai` is too old for these settings: `pip install -U google-genai`. |
+| `--printed needs --page-offset` / `pages out of range` | Add `--page-offset` (see §4 Step 1), or check the page numbers — the error prints the valid `pdf_index` range. |
 | Wrong printed page numbers | Your `--page-offset` is off, or the book restarts numbering mid-way. Re-derive it (§4.1); run sections separately if numbering resets. |
 | Batch pages `expired` | The 24-hour window passed. Resubmit just those pages — see `failed_pages.json`. |
 | A page's error says "truncated at max_tokens" | The model hit the output ceiling mid-page (rare — the ceiling is already generous at 16,384 tokens, since you only pay for what's generated). The page is treated as failed and retried on rerun (sync) or listed under `truncated` in `failed_pages.json` (batch). If it keeps happening on the same page, that page likely has an unusually dense table — try `compare.py` on it. |

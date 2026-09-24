@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-24 (g): Documentation brought up to date
+Pre-change copy: `backup/ver9_before_docs_sync/`. This entry changes docs only; no code changed.
+- **README:** quick start now uses `requirements.txt`, `.env.example`, `check_keys.py --ping` and `--printed`.
+  Also added `check_keys.py` to the script list, a note on choosing pages, and how to run the tests.
+- **USER_MANUAL:**
+  - Install section: `requirements.txt`, `.env.example`, `.env` overrides the system environment, and `check_keys.py`.
+  - Script table now includes `check_keys.py`.
+  - Corrected the batch "Submitted …" message wording.
+  - The chunk example now shows `claude-sonnet-5`.
+  - New troubleshooting rows: invalid API key, old google-genai, and `--printed` errors.
+- **ARCHITECTURE:**
+  - Module map: added `check_keys.py` and the page-selection helpers.
+  - Documented the run-wide env knobs, key loading, and Gemini 3 thinking levels.
+  - The sync data flow now shows `vision_with_retry` / `record_result` / `--workers`.
+  - The page-offset section now has the viewer−1 rule and `--printed`.
+  - Failure table updated (no in-run retry of truncation, flex backoff, exact-page retry command).
+  - Test notes now cover both test files (36 tests).
+- Moved a stray empty file (`tests/test_models_and_tiers.py.new`) into the backup folder.
+
 ## 2026-09-24 (f): `--printed` for the extractors too
 Pre-change copy: `backup/ver8_before_printed_pages/`.
 - `extractor.py` and `batch_extractor.py` accept `--printed 96,120-150` together with `--page-offset 9`, the same as compare.py.

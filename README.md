@@ -14,12 +14,14 @@ Works by **rendering each page to an image and reading it with a vision model**,
 ## Quick start
 
 ```bash
-pip install pymupdf python-dotenv anthropic
+pip install -r requirements.txt
 
-# put your keys in .env  (ANTHROPIC_API_KEY=... / OPENAI_API_KEY=... / GEMINI_API_KEY=...)
+# copy .env.example to .env and fill in your keys, then:
+python check_keys.py --ping                  # 0. are the keys OK?
 
 python estimate_cost.py doc.pdf              # 1. what will this cost?
-python compare.py doc.pdf --pages 2,182      # 2. which provider reads my tables?
+python compare.py doc.pdf --printed 96,172 --page-offset 9
+                                             # 2. which provider reads my tables?
 python batch_extractor.py doc.pdf --out ./out \
   --title "..." --page-offset 9              # 3. extract (50% off via batch)
 ```
@@ -34,5 +36,11 @@ python batch_extractor.py doc.pdf --out ./out \
 | `batch_extractor.py` | Async batch extraction at **50% cost** (Anthropic) |
 | `common.py` | Shared prompt, assembly, metadata, `.env` |
 | `providers.py` | Vision backends + pricing table |
+| `check_keys.py` | Show / test which API key each provider uses |
+
+Pages can be chosen by position (`--pages 105`, 0-based) or by the number printed on the page
+(`--printed 96 --page-offset 9`) in every script. See USER_MANUAL.md §4 for finding the offset.
 
 Both extraction modes **resume after any crash or interruption** — just rerun the same command.
+
+Tests (no API keys or network needed): `python -m unittest discover -s tests`. Changes are logged in `CHANGELOG.md`.

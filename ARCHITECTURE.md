@@ -29,8 +29,10 @@ Do **not** "optimize" this by reintroducing text-layer extraction as the primary
 ## 2. Module map
 
 ```
-common.py           Shared core. Prompt, .env loading, figure extraction,
-                    output assembly, page-offset math, shared CLI args.
+common.py           Shared core. Prompt, .env loading (.env overrides system
+                    env), rendering, figure extraction, output assembly,
+                    page-offset math + page selection (parse_page_list,
+                    resolve_pages, page_label), shared CLI args.
                     ← Both extractors depend on this. Single source of truth
                       for output format.
 
@@ -48,7 +50,10 @@ batch_extractor.py  Batch mode. Anthropic Message Batches API (50% cost).
 compare.py          Quality harness. Same pages through N providers,
                     emits HTML/MD/JSON report.
 
-estimate_cost.py    Pre-flight cost estimate. Measures real input tokens.
+estimate_cost.py    Pre-flight cost estimate. Per-model image-token rules.
+
+check_keys.py       Shows which API key each provider will use (masked) and,
+                    with --ping, tests each one with a free list-models call.
 ```
 
 **Dependency direction:** `extractor` / `batch_extractor` / `compare` / `estimate_cost` → `common` + `providers`. Nothing depends on the extractors. Keep it that way.
@@ -72,7 +77,15 @@ Registered in `BACKENDS: dict[str, Callable]`, retrieved via `get_backend(provid
 
 **To add a provider:** write one function matching that signature, add it to `BACKENDS`, add a default model to `DEFAULT_MODELS`, and add prices to `PRICING`. Nothing else in the system changes. This is the intended extension point.
 
-**Backends must not retry internally.** Retry lives in the callers (`extract_page_with_retry`, `compare.run_one`) so policy is consistent and observable.
+**Backends must not retry internally.** Retry lives in the callers (`extractor.vision_with_retry`, `compare.run_one`) so policy is consistent and observable.
+
+**Run-wide knobs are environment variables** so the backend signature never changes:
+`EXTRACTOR_MODEL` (`--model`), `EXTRACTOR_EFFORT` (`--effort`), `EXTRACTOR_SERVICE_TIER`
+(`--service-tier flex`). The CLIs set them; backends read them.
+
+**API keys:** `common.load_env()` loads `.env` with `override=True`, so `.env` beats a stale key in
+the system environment. `call_gemini` passes the key explicitly (`GEMINI_API_KEY`, then
+`GOOGLE_API_KEY`), because google-genai would otherwise prefer `GOOGLE_API_KEY`.
 
 **Truncation and empty output are failures, not partial successes.** Every backend routes its
 result through `providers.check_output(text, truncated)`, which raises `TruncatedOutput` if the
@@ -82,9 +95,11 @@ model was cut off at `max_tokens` (Anthropic: `stop_reason == "max_tokens"`; Ope
 treating it as a success would ship an incomplete chunk with no signal that anything is missing.
 These two errors are **not retried within a run** (an immediate retry would regenerate and re-bill
 up to `MAX_TOKENS` of output for the same result); the page is marked `failed` and picked up on the
-next rerun. Gemini is called with `temperature=0`, and for `*2.5-flash*` models thinking is disabled
-(`thinking_budget=0`) because thinking tokens count against `max_output_tokens`. Anthropic and
-OpenAI keep default sampling settings, since some newer models reject non-default values.
+next rerun. Gemini is called with `temperature=0` and the lowest thinking setting each family
+accepts (`providers.gemini_thinking_config`: `thinking_budget=0` on 2.5 Flash; `thinking_level`
+`minimal`, or `low` on 3.7/3.8 Flash and Pro), because thinking tokens count against
+`max_output_tokens`. Anthropic and OpenAI keep default sampling settings, since some newer models
+reject non-default values.
 
 **Media type is sniffed, not hardcoded.** `providers.media_type_of(img_b64)` looks at the base64
 prefix (`iVBOR` → PNG, `/9j/` → JPEG) so a backend sends the right `media_type`/`mime_type`
@@ -119,7 +134,7 @@ Both modes produce this dict and hand it to `common.assemble_from_pages()`. That
   "title": "...",           //  │ document-level metadata,
   "publisher": "...",       //  │ attached to EVERY chunk
   "extracted_at": "2026-07-12", // │ (for RAG provenance)
-  "model": "claude-sonnet-4-6"  // ─┘
+  "model": "claude-sonnet-5"    // ─┘
 }
 ```
 
@@ -141,15 +156,17 @@ since a placeholder string is not real content and shouldn't be embedded/retriev
 ```
 init SQLite (pages table: page_no, status, attempts, markdown, provider, error)
    ↓
-pending_pages()  ──►  for each page:
-                        render PNG @dpi (PyMuPDF)
-                        base64 → call_vision(provider)   ┐
-                        on exception: backoff, retry ≤4  ┘ extract_page_with_retry
-                        save embedded figures → figures/
-                        UPDATE pages SET status='done', markdown=..., provider=...
+pending_pages() ∩ resolve_pages(--pages / --printed)  ──►  for each page:
+     render @dpi (common.render_page_b64)                 [main thread]
+     vision_with_retry(): call_vision, backoff, ≤4 tries  [worker thread if --workers > 1]
+     record_result(): save figures, UPDATE pages ...      [main thread]
    ↓
 assemble() → build page dict → common.assemble_from_pages()
 ```
+
+With `--workers N` (`run_parallel`), only the API calls run in threads; rendering, figure
+extraction and every SQLite write stay on the main thread, and at most 2×N rendered pages are in
+memory.
 
 **Resume mechanism:** the SQLite `pages` table. `status != 'done'` defines the work queue. Rerunning the same command re-queries and continues. Partial artifacts are written even mid-run so progress is usable.
 
@@ -233,7 +250,14 @@ def printed_page(pdf_index, offset):
     return n if n >= 1 else None   # front matter → None
 ```
 
-User supplies `--page-offset`, derived once: `offset = pdf_index − printed_page` (e.g. PDF page 24 shows "14" → offset 10).
+User supplies `--page-offset`, derived once: `offset = pdf_index − printed_page`, where
+`pdf_index = viewer page − 1` (viewers count from 1). Example (reference doc): viewer page 106 shows
+"96" → `105 − 96 = 9`.
+
+**Selecting pages by printed number:** every script accepts `--printed 96,120-150` with
+`--page-offset`; `common.resolve_pages()` converts with `pdf_index = printed + offset`, validates
+the range, and `--printed` overrides `--pages`. `common.page_label()` renders
+"printed 96 · pdf_index 105 (viewer 106)" for progress lines and compare reports.
 
 **Known limitation:** assumes a single constant offset for the whole document. Books that **restart numbering** mid-way (new part resets to 1, roman-numeral front matter) break this. Two ways to extend:
 - Accept a piecewise map: `--page-offset "0-23:none,24-200:10,201-364:50"`.
@@ -260,12 +284,12 @@ The prompt does four jobs. Changing it changes output for every mode, so change 
 
 | Layer | Mechanism |
 |---|---|
-| Transient API error (sync) | `extract_page_with_retry`: up to 4 attempts, exponential backoff (2s → 4s → 8s) |
+| Transient API error (sync) | `vision_with_retry`: up to 4 attempts, exponential backoff (2s → 4s → 8s; base 30s with `--service-tier flex`) |
 | Transient API error (compare) | `run_one`: retries on 503/429/overload/timeout keyword match |
-| Truncated output (`max_tokens`) | `providers.TruncatedOutput`, raised by every backend via `check_output()`. Sync: caught like any other error, page stays failed/retried. Batch: routed to a `truncated` list, never into `pages`. Compare: reported as an error (`TruncatedOutput: ...`), not retried. |
+| Truncated output (`max_tokens`) | `providers.TruncatedOutput`, raised by every backend via `check_output()`. Sync: not retried within the run (would re-bill); page stays failed and is retried on rerun. Batch: routed to a `truncated` list, never into `pages`. Compare: reported as an error (`TruncatedOutput: ...`), not retried. |
 | Empty output | `providers.EmptyOutput`, same handling as truncation in each mode. |
 | Permanent page failure (sync) | Row marked `status='failed'` with error text; **does not block other pages**; rerun retries it |
-| Permanent page failure (batch) | Written to `failed_pages.json` — `errored`, `expired`, `truncated`, and `empty` lists, each with a printed resubmit command |
+| Permanent page failure (batch) | Written to `failed_pages.json` — `errored`, `expired`, `truncated`, and `empty` lists — plus one printed resubmit command listing exactly those pages (`--pages 3,17,42`) |
 | Process crash / power loss | Sync: SQLite checkpoint. Batch: `batch.json` (batch_ids + submitted_pages, persisted after every batch submission). Both: rerun same command. |
 | OpenAI param drift | `call_openai` tries `max_completion_tokens`, falls back to `max_tokens` (newer models renamed it) |
 
@@ -339,7 +363,7 @@ visible answer and needs testing (`compare.py --effort low`) before relying on i
 
 ## 10. Testing notes
 
-There's a `unittest` suite in `tests/test_fixes.py`. Run it from the tool's folder root:
+There's a `unittest` suite in `tests/` (`test_fixes.py`, `test_models_and_tiers.py`; 36 tests). Run it from the tool's folder root:
 
 ```bash
 python3 -m unittest discover -s tests
@@ -364,6 +388,13 @@ client (plain objects, no `anthropic` import required). It covers:
   the right pages; a `stop_reason == "max_tokens"` result goes to `truncated`, not `pages`; an old
   single-`batch_id` `batch.json` still resumes.
 - **Offset math:** `printed_page(24, 10) == 14`; `printed_page(5, 10) is None`.
+- **Models/tiers (`test_models_and_tiers.py`):** Gemini thinking levels per family; every default
+  model is priced; per-model image-token rules; `compare` `provider:model` entries restore the env;
+  `--workers` keeps DB writes on the main thread and isolates a failing page; flex is refused for
+  Anthropic.
+- **Page selection:** `resolve_pages` (printed → pdf_index, ranges, bounds, missing offset);
+  `compare --printed` end to end; `extractor --printed` processes only those pages;
+  `batch_extractor --printed` submits only those pages.
 
 Stub `providers.BACKENDS` to test everything without API keys or network — that's the seam the design exists to give you. Remaining gaps worth adding: resume correctness for sync mode
 (interrupt mid-run, rerun, assert only pending pages are reprocessed) and full failure isolation

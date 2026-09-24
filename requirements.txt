@@ -1,0 +1,6 @@
+pymupdf
+python-dotenv
+# install only the providers you use:
+anthropic
+openai
+google-genai

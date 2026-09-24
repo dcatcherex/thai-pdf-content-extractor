@@ -1,0 +1,25 @@
+# Secrets — never commit API keys
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Run outputs & resume state (regenerable, can be large)
+out*/
+comparisons/
+test/
+*.db
+batch.json
+failed_pages.json
+
+# Source documents (large; may not be yours to publish)
+*.pdf
+
+# Manual backups (git history replaces these)
+backup/
+*.zip

@@ -70,16 +70,22 @@ Where to get keys:
 
 PDFs usually have a cover, foreword, and table of contents before printed page 1. So the PDF's page *index* runs ahead of the number *printed* on the page.
 
-Open the PDF in any viewer and look at one page:
+Open the PDF in any viewer and look at one page. **Viewers count pages from 1, but this tool
+counts from 0** (`pdf_index`), so subtract 1 from the viewer's number:
 
 ```
-Viewer shows:  page 24 of 364
-Page footer prints:  14
+Viewer shows:        page 106 of 364   →  pdf_index = 106 − 1 = 105
+Page footer prints:  96
 
-offset = 24 − 14 = 10
+offset = pdf_index − printed = 105 − 96 = 9
 ```
 
-You'll pass `--page-offset 10`. This lets the tool record both numbers, so a citation can say "หน้า 14" (what a human looks up) while the code still knows it's PDF page 24.
+You'll pass `--page-offset 9`. This lets the tool record both numbers, so a citation can say "หน้า 96" (what a human looks up) while the code still knows it's `pdf_index` 105.
+
+**`--pages` also uses `pdf_index`.** To extract or compare the page printed as 96:
+`pdf_index = printed + offset = 96 + 9 = 105` → `--pages 105`.
+Or let the tool convert for you: every script accepts `--printed 96 --page-offset 9`
+(ranges and lists work too: `--printed 96,120-150`).
 
 If your document has no printed page numbers, skip this flag.
 
@@ -119,6 +125,9 @@ Gemini 3, which uses a fixed ~1,120 tokens/image, or on Sonnet 4.6/Haiku, which 
 ```bash
 python compare.py doc.pdf --pages 2,182,200 --dpi 200
 
+# or by the page number printed on the paper (converted with the offset):
+python compare.py doc.pdf --printed 96,120-122 --page-offset 9
+
 # compare several models of one provider side by side (provider:model):
 python compare.py doc.pdf --pages 2,182 \
   --providers anthropic,gemini:gemini-3.5-flash-lite,gemini:gemini-2.5-flash
@@ -139,21 +148,21 @@ What to look for:
 python batch_extractor.py doc.pdf --out ./out_batch \
   --title "คู่มือผู้ดำเนินการฯ" \
   --publisher "กรมสนับสนุนบริการสุขภาพ" \
-  --page-offset 10
+  --page-offset 9
 ```
 
 **Option B — Sync mode (live, any provider, can split cost):**
 
 ```bash
 python extractor.py doc.pdf --out ./out --provider anthropic \
-  --title "คู่มือผู้ดำเนินการฯ" --page-offset 10
+  --title "คู่มือผู้ดำเนินการฯ" --page-offset 9
 ```
 
 **Option C — Flex tier (OpenAI/Gemini at ~50% off, no batch plumbing):**
 
 ```bash
 python extractor.py doc.pdf --out ./out --provider gemini \
-  --service-tier flex --workers 8 --title "คู่มือผู้ดำเนินการฯ" --page-offset 10
+  --service-tier flex --workers 8 --title "คู่มือผู้ดำเนินการฯ" --page-offset 9
 ```
 
 Flex requests can take minutes each (Gemini targets 1–15 min) and may be refused with 429/503
@@ -292,7 +301,8 @@ The repeating footer (page number + book title + department) is **stripped from 
 |------|---------|---------|
 | `--out` | varies | Output folder |
 | `--dpi` | `150` | Render resolution. Use `200` for dense tables. |
-| `--pages` | all | Range, e.g. `0-199` (inclusive, 0-based) |
+| `--pages` | all | `pdf_index` pages (0-based = viewer page − 1): range `0-199`, list/ranges `2,105,180-182` |
+| `--printed` | — | Select by **printed** page number instead, e.g. `96` or `96,120-150`. Needs `--page-offset`; overrides `--pages` |
 | `--title` | — | Document title, attached to every chunk |
 | `--publisher` | — | Publisher, attached to every chunk |
 | `--page-offset` | — | `pdf_index − printed_page` (see §4.1) |
@@ -322,7 +332,9 @@ The repeating footer (page number + book title + department) is **stripped from 
 |------|---------|---------|
 | `--count` | `3` | How many pages |
 | `--start` | `0` | First page |
-| `--pages` | — | Explicit list, e.g. `2,182,200` (overrides count/start) |
+| `--pages` | — | `pdf_index` list/ranges, e.g. `2,105,180-182` (overrides count/start) |
+| `--printed` | — | Printed page numbers instead, e.g. `96,120-122`; needs `--page-offset` |
+| `--page-offset` | — | Same as the extractors; also labels the report "printed 96 · pdf_index 105 (viewer 106)" |
 | `--providers` | all three | Comma list of `provider` or `provider:model` |
 | `--effort` | — | Apply one effort/thinking level to every entry |
 | `--out` | `./comparisons` | Timestamped subfolder is created |

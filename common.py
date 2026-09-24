@@ -98,12 +98,55 @@ def save_figures(doc, page_no, fig_dir: Path):
     return saved
 
 
+def parse_page_list(spec):
+    """'96, 100-102' -> [96, 100, 101, 102] (sorted, de-duplicated)."""
+    nums = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = (int(x) for x in part.split("-", 1))
+            nums.update(range(min(lo, hi), max(lo, hi) + 1))
+        else:
+            nums.add(int(part))
+    return sorted(nums)
+
+
+def _check_range(nums, n_pages):
+    bad = [n for n in nums if n < 0 or n >= n_pages]
+    if bad:
+        raise SystemExit(f"pages out of range (doc has {n_pages} pages, "
+                         f"pdf_index 0-{n_pages - 1}): {bad}")
+    return nums
+
+
 def parse_pages_arg(pages_str, n_pages):
-    """Parse '0-99' or '' (= all) into a sorted list of page numbers."""
+    """pdf_index list/ranges ('0-99', '2,105,180-182') or '' (= all)."""
     if not pages_str:
         return list(range(n_pages))
-    lo, hi = (int(x) for x in pages_str.split("-"))
-    return [p for p in range(n_pages) if lo <= p <= hi]
+    return _check_range(parse_page_list(pages_str), n_pages)
+
+
+def resolve_pages(pages_str, printed_str, offset, n_pages):
+    """Pages to process as pdf_index values. `printed_str` (printed page
+    numbers, converted with pdf_index = printed + offset) wins over
+    `pages_str` (pdf_index directly); both empty = every page."""
+    if printed_str:
+        if offset is None:
+            raise SystemExit("--printed needs --page-offset (pdf_index - printed "
+                             "page; viewer page 106 showing '96' -> 105-96 = 9)")
+        return _check_range([p + offset for p in parse_page_list(printed_str)],
+                            n_pages)
+    return parse_pages_arg(pages_str, n_pages)
+
+
+def page_label(pno, offset):
+    """'printed 96 · pdf_index 105 (viewer 106)' — every number a person
+    might use to find the page."""
+    pp = printed_page(pno, offset)
+    base = f"pdf_index {pno} (viewer {pno + 1})"
+    return f"printed {pp} · {base}" if pp is not None else base
 
 
 def printed_page(pdf_index, offset):
@@ -139,9 +182,12 @@ def add_meta_args(ap):
     ap.add_argument("--publisher", default="",
                     help="publisher/department, attached to every chunk")
     ap.add_argument("--page-offset", dest="page_offset", type=int, default=None,
-                    help="pdf_index - printed_page. E.g. if PDF page 24 shows "
-                         "printed '14', pass 10. Omit if the doc has no printed "
-                         "numbers.")
+                    help="pdf_index - printed_page, where pdf_index = viewer page "
+                         "number - 1. E.g. viewer page 106 shows printed '96': "
+                         "105 - 96 = 9. Omit if the doc has no printed numbers.")
+    ap.add_argument("--printed", default="",
+                    help="select pages by PRINTED page number instead of "
+                         "--pages, e.g. '96' or '96,120-150'. Needs --page-offset.")
 
 
 def assemble_from_pages(pages: dict, out_dir: Path, n_pages: int, doc_meta=None):

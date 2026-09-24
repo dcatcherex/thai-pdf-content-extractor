@@ -21,7 +21,7 @@ pip install pymupdf python-dotenv anthropic
 python estimate_cost.py doc.pdf              # 1. what will this cost?
 python compare.py doc.pdf --pages 2,182      # 2. which provider reads my tables?
 python batch_extractor.py doc.pdf --out ./out \
-  --title "..." --page-offset 10             # 3. extract (50% off via batch)
+  --title "..." --page-offset 9              # 3. extract (50% off via batch)
 ```
 
 ## The scripts

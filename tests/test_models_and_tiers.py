@@ -116,5 +116,101 @@ class TestFlexFlag(unittest.TestCase):
                 extractor.main()
 
 
+class TestComparePrinted(unittest.TestCase):
+    def _args(self, **kw):
+        from types import SimpleNamespace
+        d = dict(pages="", printed="", page_offset=None, start=0, count=3)
+        d.update(kw)
+        return SimpleNamespace(**d)
+
+    def test_printed_converts_with_offset(self):
+        a = self._args(printed="96,120-121", page_offset=9)
+        self.assertEqual(compare.parse_pages(a, 364), [105, 129, 130])
+
+    def test_printed_requires_offset(self):
+        with self.assertRaises(SystemExit):
+            compare.parse_pages(self._args(printed="96"), 364)
+
+    def test_pages_ranges_and_bounds(self):
+        self.assertEqual(compare.parse_pages(self._args(pages="2,105,180-182"), 364),
+                         [2, 105, 180, 181, 182])
+        with self.assertRaises(SystemExit):
+            compare.parse_pages(self._args(pages="364"), 364)
+
+    def test_label(self):
+        self.assertEqual(compare.page_label(105, 9),
+                         "printed 96 · pdf_index 105 (viewer 106)")
+        self.assertEqual(compare.page_label(3, 9), "pdf_index 3 (viewer 4)")
+
+    def test_report_end_to_end(self):
+        tmp = Path(tempfile.mkdtemp())
+        doc = fitz.open()
+        for i in range(12):
+            doc.new_page().insert_text((72, 72), f"p{i}")
+        pdf = tmp / "t.pdf"; doc.save(pdf)
+        stub = lambda img, prompt, mt: "# body"
+        argv = ["compare.py", str(pdf), "--printed", "1", "--page-offset", "9",
+                "--providers", "anthropic", "--dpi", "40", "--out", str(tmp / "c")]
+        with mock.patch.dict(providers.BACKENDS, {"anthropic": stub}), \
+             mock.patch.object(sys, "argv", argv):
+            compare.main()
+        run = next((tmp / "c").iterdir())
+        self.assertIn("printed 1 · pdf_index 10", (run / "report.html").read_text("utf-8"))
+        self.assertTrue((run / "page_0010.png").exists())
+
+
+class TestExtractorsPrinted(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        doc = fitz.open()
+        for i in range(12):
+            doc.new_page().insert_text((72, 72), f"p{i}")
+        self.pdf = self.tmp / "t.pdf"; doc.save(self.pdf)
+
+    def test_resolve_pages(self):
+        self.assertEqual(common.resolve_pages("", "1-2", 9, 12), [10, 11])
+        self.assertEqual(common.resolve_pages("2,5-6", "", None, 12), [2, 5, 6])
+        self.assertEqual(common.resolve_pages("", "", None, 3), [0, 1, 2])
+        with self.assertRaises(SystemExit):
+            common.resolve_pages("", "3", 9, 12)      # printed 3 -> 12, out of range
+        with self.assertRaises(SystemExit):
+            common.resolve_pages("", "1", None, 12)   # offset missing
+
+    def test_sync_extractor_only_runs_printed_pages(self):
+        seen = []
+
+        def stub(img, prompt, mt):
+            seen.append(1)
+            return "# body"
+        out = self.tmp / "out"
+        argv = ["extractor.py", str(self.pdf), "--out", str(out), "--dpi", "40",
+                "--printed", "1-2", "--page-offset", "9"]
+        with mock.patch.dict(providers.BACKENDS, {"anthropic": stub}), \
+             mock.patch.object(sys, "argv", argv):
+            extractor.main()
+        con = extractor.init_db(out / "state.db", 12, "x")
+        done = [r[0] for r in con.execute(
+            "SELECT page_no FROM pages WHERE status='done' ORDER BY page_no")]
+        self.assertEqual(done, [10, 11])
+        self.assertEqual(len(seen), 2)
+
+    def test_batch_extractor_submits_printed_pages(self):
+        import types, json
+        import batch_extractor
+        from test_fixes import FakeClient
+        client = FakeClient()
+        fake = types.ModuleType("anthropic")
+        fake.Anthropic = lambda *a, **k: client
+        out = self.tmp / "ob"
+        argv = ["batch_extractor.py", str(self.pdf), "--out", str(out), "--dpi", "40",
+                "--printed", "1", "--page-offset", "9", "--no-wait"]
+        with mock.patch.dict(sys.modules, {"anthropic": fake}), \
+             mock.patch.object(sys, "argv", argv):
+            batch_extractor.main()
+        state = json.loads((out / "batch.json").read_text())
+        self.assertEqual(state["pages"], [10])
+        self.assertEqual(state["submitted_pages"], [[10]])
+
+
 if __name__ == "__main__":
     unittest.main()

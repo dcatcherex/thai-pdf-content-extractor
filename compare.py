@@ -9,6 +9,7 @@ Examples:
     python compare.py doc.pdf
     python compare.py doc.pdf --count 5 --start 180
     python compare.py doc.pdf --pages 2,182,200 --providers anthropic,gemini
+    python compare.py doc.pdf --printed 96,120-121 --page-offset 9
     python compare.py doc.pdf --start 50 --count 2 --out ./compare_runs
 
 Output (saved for later review) in --out (default ./comparisons/<timestamp>/):
@@ -37,14 +38,18 @@ MAX_TOKENS = 16384
 
 
 def parse_pages(args, n_pages):
-    if args.pages:
-        nums = sorted({int(x) for x in args.pages.split(",") if x.strip() != ""})
-    else:
-        nums = list(range(args.start, args.start + args.count))
-    bad = [n for n in nums if n < 0 or n >= n_pages]
-    if bad:
-        raise SystemExit(f"pages out of range (doc has {n_pages}): {bad}")
-    return nums
+    """Return pdf_index values (0-based). --printed converts printed page
+    numbers using --page-offset; --pages takes pdf_index directly; neither
+    = --count pages from --start."""
+    printed = getattr(args, "printed", "")
+    if printed or args.pages:
+        return common.resolve_pages(args.pages, printed,
+                                    getattr(args, "page_offset", None), n_pages)
+    return common._check_range(list(range(args.start, args.start + args.count)),
+                               n_pages)
+
+
+page_label = common.page_label
 
 
 def split_entry(entry):
@@ -92,7 +97,7 @@ def run_one(entry, img_b64, retries=2, backoff=4.0):
             os.environ["EXTRACTOR_MODEL"] = saved
 
 
-def build_html(results, providers_list, models, out_dir):
+def build_html(results, providers_list, models, out_dir, offset=None):
     def cell(text, err):
         if err:
             return f'<td class="err"><b>ERROR</b><br>{html.escape(err)}</td>'
@@ -102,7 +107,7 @@ def build_html(results, providers_list, models, out_dir):
     for r in results:
         pno = r["page"]
         header = (f'<tr><th colspan="{len(providers_list)+1}" class="pghdr">'
-                  f'Page {pno} '
+                  f'{html.escape(page_label(pno, offset))} '
                   f'<a href="page_{pno:04d}.png">[source image]</a></th></tr>')
         timing = "<tr><td><b>time (s)</b></td>" + "".join(
             f'<td>{r["by_provider"][p]["seconds"]}</td>'
@@ -136,11 +141,12 @@ especially on Thai tables, before committing a cost-split run.</p>
     (out_dir / "report.html").write_text(doc, encoding="utf-8")
 
 
-def build_md(results, providers_list, models, out_dir):
+def build_md(results, providers_list, models, out_dir, offset=None):
     parts = ["# Thai PDF — provider comparison\n",
              f"_Generated {datetime.now():%Y-%m-%d %H:%M}_\n"]
     for r in results:
-        parts.append(f"\n## Page {r['page']}  (source: page_{r['page']:04d}.png)\n")
+        parts.append(f"\n## {page_label(r['page'], offset)}  "
+                     f"(source: page_{r['page']:04d}.png)\n")
         for p in providers_list:
             d = r["by_provider"][p]
             parts.append(f"\n### {p} — `{models[p]}` ({d['seconds']}s)\n")
@@ -159,8 +165,14 @@ def main():
     ap.add_argument("--start", type=int, default=0,
                     help="first page, 0-based (default 0)")
     ap.add_argument("--pages", default="",
-                    help="explicit comma list e.g. '2,182,200' (overrides "
-                         "--count/--start)")
+                    help="pdf_index list/ranges (0-based = viewer page - 1), "
+                         "e.g. '2,105,180-182' (overrides --count/--start)")
+    ap.add_argument("--printed", default="",
+                    help="PRINTED page numbers instead, e.g. '96,120-122'. "
+                         "Needs --page-offset. Overrides --pages.")
+    ap.add_argument("--page-offset", dest="page_offset", type=int, default=None,
+                    help="pdf_index - printed_page (same as the extractors). "
+                         "Also labels the report with printed page numbers.")
     ap.add_argument("--providers", default="anthropic,openai,gemini",
                     help="comma list of provider or provider:model, e.g. "
                          "'anthropic,gemini:gemini-2.5-flash,"
@@ -188,7 +200,8 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     models = {p: split_entry(p)[1] for p in providers_list}
-    print(f"Comparing pages {pages} across {providers_list}")
+    print("Comparing " + ", ".join(page_label(p, args.page_offset) for p in pages)
+          + f"\nacross {providers_list}")
     print(f"Saving to {out_dir}\n")
 
     results = []
@@ -202,14 +215,17 @@ def main():
             text, secs, err = run_one(p, img_b64)
             by_provider[p] = {"text": text, "seconds": secs, "error": err}
             print(f" {'ERR' if err else 'ok'} ({secs}s)")
-        results.append({"page": pno, "by_provider": by_provider})
+        results.append({"page": pno,
+                        "printed_page": common.printed_page(pno, args.page_offset),
+                        "by_provider": by_provider})
 
     (out_dir / "results.json").write_text(
         json.dumps({"pages": pages, "providers": providers_list,
-                    "models": models, "results": results},
+                    "models": models, "page_offset": args.page_offset,
+                    "results": results},
                    ensure_ascii=False, indent=2), encoding="utf-8")
-    build_html(results, providers_list, models, out_dir)
-    build_md(results, providers_list, models, out_dir)
+    build_html(results, providers_list, models, out_dir, args.page_offset)
+    build_md(results, providers_list, models, out_dir, args.page_offset)
     print(f"\nDone. Open {out_dir/'report.html'} in a browser to compare.")
 
 

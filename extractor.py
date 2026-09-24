@@ -134,7 +134,7 @@ def extract_page_with_retry(con, doc, page_no, dpi, fig_dir, provider):
     return record_result(con, doc, page_no, fig_dir, provider, md, attempts, error)
 
 
-def run_parallel(con, doc, todo, dpi, fig_dir, provider, workers):
+def run_parallel(con, doc, todo, dpi, fig_dir, provider, workers, offset=None):
     """Run pages through `workers` threads. Rendering, figure extraction and
     all SQLite writes stay on the main thread; only the API calls run in
     parallel. At most 2*workers rendered pages are held in memory."""
@@ -161,7 +161,7 @@ def run_parallel(con, doc, todo, dpi, fig_dir, provider, workers):
                 ok = record_result(con, doc, pno, fig_dir, provider,
                                    md, attempts, error)
                 done += 1
-                print(f"[{done}/{len(todo)}] page {pno}: "
+                print(f"[{done}/{len(todo)}] {common.page_label(pno, offset)}: "
                       f"{'ok' if ok else 'FAILED'}")
                 submit_next()
 
@@ -187,9 +187,9 @@ def main():
                     choices=["anthropic", "openai", "gemini"],
                     help="vision provider for this run")
     ap.add_argument("--pages", default="",
-                    help="restrict to a page range, e.g. '0-99' or '100-199' "
-                         "(inclusive, 0-based). Lets you route ranges to "
-                         "different prepaid providers across runs.")
+                    help="restrict to pdf_index pages (0-based = viewer page - 1), "
+                         "e.g. '0-99' or '2,105,180-182'. Lets you route ranges "
+                         "to different prepaid providers across runs.")
     ap.add_argument("--limit", type=int, default=0,
                     help="process at most N pending pages this run (0 = all)")
     ap.add_argument("--model", default="",
@@ -228,9 +228,10 @@ def main():
     con = init_db(out_dir / "state.db", n_pages, pdf_hash)
 
     todo = pending_pages(con)
-    if args.pages:
-        lo, hi = (int(x) for x in args.pages.split("-"))
-        todo = [p for p in todo if lo <= p <= hi]
+    if args.pages or args.printed:
+        wanted = set(common.resolve_pages(args.pages, args.printed,
+                                          args.page_offset, n_pages))
+        todo = [p for p in todo if p in wanted]
     if args.limit:
         todo = todo[:args.limit]
     print(f"{n_pages} pages total; {len(todo)} to process this run "
@@ -238,7 +239,7 @@ def main():
 
     if args.workers > 1:
         run_parallel(con, doc, todo, args.dpi, fig_dir, args.provider,
-                     args.workers)
+                     args.workers, args.page_offset)
     else:
         done = 0
         for page_no in todo:
@@ -246,7 +247,8 @@ def main():
                 con, doc, page_no, args.dpi, fig_dir, args.provider)
             done += 1
             status = "ok" if ok else "FAILED"
-            print(f"[{done}/{len(todo)}] page {page_no}: {status}")
+            print(f"[{done}/{len(todo)}] "
+                  f"{common.page_label(page_no, args.page_offset)}: {status}")
 
     doc_meta = common.build_doc_meta(args, providers._model_for(args.provider))
     remaining = len(pending_pages(con))

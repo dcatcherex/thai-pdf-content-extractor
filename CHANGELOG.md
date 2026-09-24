@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-09-24 (f): `--printed` for the extractors too
+Pre-change copy: `backup/ver8_before_printed_pages/`.
+- `extractor.py` and `batch_extractor.py` accept `--printed 96,120-150` together with `--page-offset 9`, the same as compare.py.
+- `--pages` accepts lists and ranges in every script (`2,105,180-182`). Before, the extractors only took a single `lo-hi` range.
+  An out-of-range page now fails with a clear message.
+- The progress lines show "printed 96 · pdf_index 105 (viewer 106)" when an offset is given.
+- The batch retry hint now lists the exact failed pages (`--pages 3,17,42`) instead of a `lo-hi` range, so pages that already
+  succeeded aren't re-billed. This closes an item from the original audit.
+- The page-selection code now lives in one shared place (`common.parse_page_list`, `resolve_pages`, `page_label`), and compare.py uses it too.
+- Added 3 tests (36 in total, all passing).
+
+## 2026-09-24 (e): compare.py understands printed page numbers
+- New `--printed 96,120-122` and `--page-offset 9`. Printed numbers are converted to `pdf_index` automatically
+  (`printed + offset`), and `--printed` without an offset exits with a hint explaining how to work it out.
+- `--pages` now accepts ranges (`180-182`) as well as lists. An out-of-range page now reports the valid `pdf_index` range.
+- Report headers (HTML and MD) and the console show every page number a person might use:
+  "printed 96 · pdf_index 105 (viewer 106)". `results.json` records `page_offset`, plus `printed_page` for each page.
+- Added 5 tests (33 in total, all passing).
+
+## 2026-09-24 (d): Page-offset docs fixed (off by one)
+- The page-offset instructions in USER_MANUAL.md used the viewer's page number directly. Viewers count from 1, but
+  `pdf_index` counts from 0, so the derived offset was one too high. The docs now say offset = (viewer page − 1) − printed page.
+  For elder_manual.pdf: viewer 106 shows printed 96, so the offset is **9**, not 10. This was checked against the PDF's
+  text layer. The `--page-offset` help text was fixed the same way. The code was already correct.
+- Added how to target a printed page: `pdf_index = printed + offset` (printed 96 → `--pages 105`).
+
 ## 2026-09-24 (c): Gemini "API key not valid" fix
 
 Pre-change copy: `backup/ver7_before_key_fix/`.
@@ -99,6 +125,6 @@ Verify: `python -m unittest discover -s tests` → 20 tests, all passing (no API
 ### Not changed yet (from the audit, still open)
 - Retry treats auth/bad-model errors as transient; no fail-fast after repeated identical errors.
 - Chunks record the last run's model rather than each page's actual model. (A `--model` flag now exists; see the 2026-09-24 (b) entry.)
-- Sync mode only warns when the PDF hash changes; batch retry hint still suggests a `lo-hi` range in a new folder.
-- `--pages` accepts only `lo-hi`. Figure files aren't linked to `[FIGURE n]`. Vector charts aren't saved.
-- `import fitz` is deprecated (use `import pymupdf`). There's still no git repo.
+- Sync mode only warns when the PDF hash changes. Batch retries still go to a new folder. (The retry hint is fixed; see the (f) entry.)
+- Figure files aren't linked to `[FIGURE n]`. Vector charts aren't saved. (`--pages` lists are done; see the (f) entry.)
+- `import fitz` is deprecated (use `import pymupdf`). (A git repo now exists.)

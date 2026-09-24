@@ -239,7 +239,8 @@ def main():
     ap.add_argument("--out", default="./out_batch")
     ap.add_argument("--dpi", type=int, default=150)
     ap.add_argument("--pages", default="",
-                    help="restrict to a range e.g. '0-199' (inclusive, 0-based)")
+                    help="pdf_index pages (0-based = viewer page - 1), e.g. "
+                         "'0-199' or '2,105,180-182'")
     ap.add_argument("--model", default=DEFAULT_MODELS["anthropic"],
                     help="Anthropic model (default: %(default)s)")
     ap.add_argument("--effort", default="", choices=["", "low", "medium", "high"],
@@ -263,7 +264,8 @@ def main():
 
     doc = fitz.open(pdf_path)
     n_pages = len(doc)
-    pages = common.parse_pages_arg(args.pages, n_pages)
+    pages = common.resolve_pages(args.pages, args.printed, args.page_offset,
+                                 n_pages)
     pdf_size = pdf_path.stat().st_size
 
     # ---- resume: reuse existing batch_ids if present ----
@@ -322,10 +324,10 @@ def main():
               f"(errored={len(errored)}, expired={len(expired)}, "
               f"truncated={len(truncated)}, empty={len(empty)}); "
               f"see failed_pages.json.")
-        lo, hi = min(problem), max(problem)
-        print(f"Resubmit them in a fresh --out, e.g.:\n"
+        # exact list, so pages that already succeeded aren't re-billed
+        print(f"Resubmit just those pages in a fresh --out:\n"
               f"  python batch_extractor.py {args.pdf} "
-              f"--out {args.out}_retry --pages {lo}-{hi}")
+              f"--out {args.out}_retry --pages {','.join(map(str, problem))}")
     else:
         print("All pages succeeded.")
 

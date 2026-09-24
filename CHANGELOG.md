@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-09-24 (i): Gemini Batch API (50% off)
+Pre-change copy: `backup/ver11_before_gemini_batch/`. Tests: 51, all passing (fake client; no real API call yet).
+- **New `gemini_batch.py`:**
+  - Pages are streamed into a JSONL request file, uploaded with the Files API, and submitted as one `batches.create`.
+  - The job name is saved to `gemini_batch.json` immediately, because creation is not idempotent: a second create would bill twice.
+  - Polling runs until a final state. Results are downloaded (a local copy is kept in `gemini_results.jsonl`) and matched to
+    pages **by key**.
+  - Error lines and missing lines go to `errored`, `MAX_TOKENS` goes to `truncated`, and blank output goes to `empty`.
+    Thinking parts are ignored.
+- **`batch_extractor.py --provider gemini`:** same flags, resume behavior, mismatch check, `failed_pages.json` and outputs as the
+  Anthropic path. `--model` now defaults to the chosen provider's default model.
+- **Web app:** the economy preset (your `gemini-3.8-flash`) can now run "แบบประหยัด ลด 50%" (overnight). The "ตรวจสอบผล"
+  (check results) button works for both providers.
+- **providers.py:** new `gemini_client()` and `gemini_generation_config()` helpers, shared by the live call and batch requests,
+  so both use the same key handling, temperature and thinking level.
+- Docs updated: README, USER_MANUAL (Option A, §5 Gemini specifics, flags) and ARCHITECTURE (module map, new data-flow section, cost paths, tests).
+
+## 2026-09-24 (h): Web app for staff (Streamlit, Thai UI)
+Pre-change copy: `backup/ver10_before_streamlit/`. Tests: 45, all passing (stand-in models; no real API calls yet).
+- **New `app.py`:** a Thai browser interface with these steps:
+  - upload the PDF
+  - fill in the document details
+  - choose a quality preset
+  - **detect the page offset automatically** (with a check-by-eye preview)
+  - choose pages by printed number
+  - run now or overnight at −50%
+  - see the **cost in baht** first, blocked above the budget limit
+  - follow live progress, with pause/continue
+  - **review** flagged pages next to the page image, then edit or re-read with a stronger preset
+  - download a zip
+- **New `jobs.py`:** job folders and background threads (they keep running if the browser closes), resume after a server restart,
+  batch submit/check, and `PRESETS` (ประหยัด / มาตรฐาน / ละเอียดสูงสุด).
+- **New `quality.py`:** automatic review flags (tables with many empty cells, doubled Thai marks, short text, truncated/failed pages).
+- **New `offset_detect.py`:** reads printed page numbers on 5 sample pages and takes a majority vote. Thai digits are supported.
+- **providers.py / extractor.py:** backends accept an optional `model=` per call, so parallel jobs with different models
+  don't clash. The CLIs behave exactly as before.
+- **New files:** `start_app.bat` (Windows launcher, office network), `.streamlit/config.toml` (500 MB uploads), `STAFF_GUIDE_TH.md`
+  (Thai staff guide), and a new USER_MANUAL §12 (setup and security: there is no login, so use it on a trusted network only).
+- `requirements.txt` now includes `streamlit`. `.gitignore` now excludes `jobs/` and `app_settings.json`.
+
 ## 2026-09-24 (g): Documentation brought up to date
 Pre-change copy: `backup/ver9_before_docs_sync/`. This entry changes docs only; no code changed.
 - **README:** quick start now uses `requirements.txt`, `.env.example`, `check_keys.py --ping` and `--printed`.

@@ -241,8 +241,11 @@ def main():
     ap.add_argument("--pages", default="",
                     help="pdf_index pages (0-based = viewer page - 1), e.g. "
                          "'0-199' or '2,105,180-182'")
-    ap.add_argument("--model", default=DEFAULT_MODELS["anthropic"],
-                    help="Anthropic model (default: %(default)s)")
+    ap.add_argument("--provider", default="anthropic", choices=["anthropic", "gemini"],
+                    help="anthropic = Message Batches; gemini = Gemini Batch API "
+                         "(both 50%% off)")
+    ap.add_argument("--model", default="",
+                    help="model ID (default: the provider's default in providers.py)")
     ap.add_argument("--effort", default="", choices=["", "low", "medium", "high"],
                     help="output_config.effort (default: model default). "
                          "Lower = fewer output/thinking tokens; test with "
@@ -253,6 +256,9 @@ def main():
     args = ap.parse_args()
     global EFFORT
     EFFORT = args.effort or None
+    args.model = args.model or DEFAULT_MODELS[args.provider]
+    if args.provider == "gemini":
+        return _main_gemini(args)
 
     from anthropic import Anthropic
     client = Anthropic()  # reads ANTHROPIC_API_KEY (from .env via load_env)
@@ -310,6 +316,52 @@ def main():
     print("All batches ended. Retrieving results...")
     page_recs, errored, expired, truncated, empty = collect_results(
         client, batch_ids, doc, fig_dir)
+    _finish(args, out_dir, n_pages, pages, page_recs, errored, expired,
+            truncated, empty)
+
+
+def _main_gemini(args):
+    import os
+    import gemini_batch
+    if args.effort:
+        os.environ["EXTRACTOR_EFFORT"] = args.effort   # → Gemini thinking_level
+    client = providers.gemini_client()
+    pdf_path = Path(args.pdf)
+    out_dir = Path(args.out); out_dir.mkdir(parents=True, exist_ok=True)
+    fig_dir = out_dir / "figures"; fig_dir.mkdir(exist_ok=True)
+    doc = fitz.open(pdf_path)
+    n_pages = len(doc)
+    pages = common.resolve_pages(args.pages, args.printed, args.page_offset, n_pages)
+    state_path = out_dir / "gemini_batch.json"
+
+    state = gemini_batch.load_state(state_path)
+    if state:
+        if not _check_resume_matches(state, pages, args.dpi, args.model, pdf_path):
+            sys.exit(1)
+        print(f"Resuming existing Gemini batch {state['batch_name']} "
+              f"(submitted {state.get('submitted_at', '?')}).")
+    else:
+        print(f"Submitting {len(pages)} pages via {args.model} "
+              f"(Gemini Batch API, 50% pricing)...")
+        state = gemini_batch.submit(client, doc, pages, args.dpi, args.model,
+                                    out_dir, pdf_path.name, pdf_path.stat().st_size)
+        print(f"Submitted 1 batch: {state['batch_name']}\nSaved to {state_path}")
+
+    if args.no_wait:
+        print("--no-wait set; exiting. Rerun the same command to retrieve.")
+        return
+    print("Polling for completion (target < 24 h, usually much faster)...")
+    final = gemini_batch.wait(client, state)
+    print(f"Batch finished: {final}. Retrieving results...")
+    page_recs, errored, expired, truncated, empty = gemini_batch.collect(
+        client, state, doc, fig_dir, out_dir)
+    _finish(args, out_dir, n_pages, pages, page_recs, errored, expired,
+            truncated, empty)
+
+
+def _finish(args, out_dir, n_pages, pages, page_recs, errored, expired,
+            truncated, empty):
+    """Assemble outputs and report failures (shared by Anthropic and Gemini)."""
     doc_meta = common.build_doc_meta(args, args.model)
     common.assemble_from_pages(page_recs, out_dir, n_pages, doc_meta)
 
@@ -326,7 +378,7 @@ def main():
               f"see failed_pages.json.")
         # exact list, so pages that already succeeded aren't re-billed
         print(f"Resubmit just those pages in a fresh --out:\n"
-              f"  python batch_extractor.py {args.pdf} "
+              f"  python batch_extractor.py {args.pdf} --provider {args.provider} "
               f"--out {args.out}_retry --pages {','.join(map(str, problem))}")
     else:
         print("All pages succeeded.")

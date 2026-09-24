@@ -42,8 +42,11 @@ DEFAULT_MODELS = {
 }
 
 
-def _model_for(provider: str) -> str:
-    return os.environ.get("EXTRACTOR_MODEL") or DEFAULT_MODELS[provider]
+def _model_for(provider: str, model: str | None = None) -> str:
+    """An explicit `model` (per call — used by the web app, where several jobs
+    with different models run at once in one process) wins over the
+    EXTRACTOR_MODEL env var (per run — the CLIs), then DEFAULT_MODELS."""
+    return model or os.environ.get("EXTRACTOR_MODEL") or DEFAULT_MODELS[provider]
 
 
 # Standard per-MTok prices: (input, output), keyed by model ID. Used by
@@ -140,7 +143,8 @@ def media_type_of(img_b64: str) -> str:
     return "image/png"
 
 
-def call_anthropic(img_b64: str, prompt: str, max_tokens: int) -> str:
+def call_anthropic(img_b64: str, prompt: str, max_tokens: int,
+                   model: str | None = None) -> str:
     from anthropic import Anthropic
     client = Anthropic()
     extra = {}
@@ -148,7 +152,7 @@ def call_anthropic(img_b64: str, prompt: str, max_tokens: int) -> str:
         # extra_body so older SDK versions without output_config still work
         extra["extra_body"] = {"output_config": {"effort": _effort()}}
     msg = client.messages.create(
-        model=_model_for("anthropic"),
+        model=_model_for("anthropic", model),
         max_tokens=max_tokens,
         **extra,
         messages=[{"role": "user", "content": [
@@ -161,7 +165,8 @@ def call_anthropic(img_b64: str, prompt: str, max_tokens: int) -> str:
     return check_output(text, msg.stop_reason == "max_tokens")
 
 
-def call_openai(img_b64: str, prompt: str, max_tokens: int) -> str:
+def call_openai(img_b64: str, prompt: str, max_tokens: int,
+                model: str | None = None) -> str:
     from openai import OpenAI
     tier = _service_tier()
     # Flex requests can queue for minutes; the docs suggest a 15-min timeout.
@@ -174,7 +179,7 @@ def call_openai(img_b64: str, prompt: str, max_tokens: int) -> str:
     ]
     # NOTE: no 'temperature' here on purpose — newer OpenAI reasoning models
     # (gpt-5.x) reject a non-default temperature.
-    kwargs = dict(model=_model_for("openai"),
+    kwargs = dict(model=_model_for("openai", model),
                   messages=[{"role": "user", "content": content}])
     if tier:
         kwargs["service_tier"] = tier
@@ -195,22 +200,34 @@ def call_openai(img_b64: str, prompt: str, max_tokens: int) -> str:
     return check_output(text, truncated)
 
 
-def call_gemini(img_b64: str, prompt: str, max_tokens: int) -> str:
-    import base64
+def gemini_client():
+    """google-genai client with the key passed explicitly: the library otherwise
+    prefers GOOGLE_API_KEY over GEMINI_API_KEY, so a stray GOOGLE_API_KEY in the
+    system environment would be used instead of the key in .env."""
     from google import genai
-    from google.genai import types
-    # Pass the key explicitly: google-genai otherwise prefers GOOGLE_API_KEY
-    # over GEMINI_API_KEY, so a stray GOOGLE_API_KEY in the system environment
-    # would be used instead of the key in .env.
     key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    client = genai.Client(api_key=key) if key else genai.Client()
-    model = _model_for("gemini")
-    # Plain dict config: newer fields (thinking_level, service_tier) need a
-    # recent google-genai; upgrade it if you see a validation error.
+    return genai.Client(api_key=key) if key else genai.Client()
+
+
+def gemini_generation_config(model: str, max_tokens: int) -> dict:
+    """Shared by the live call and the batch JSONL, so both behave the same."""
     cfg = {"max_output_tokens": max_tokens, "temperature": 0}
     thinking = gemini_thinking_config(model, _effort())
     if thinking:
         cfg["thinking_config"] = thinking
+    return cfg
+
+
+def call_gemini(img_b64: str, prompt: str, max_tokens: int,
+                model: str | None = None) -> str:
+    import base64
+    from google import genai
+    from google.genai import types
+    client = gemini_client()
+    model = _model_for("gemini", model)
+    # Plain dict config: newer fields (thinking_level, service_tier) need a
+    # recent google-genai; upgrade it if you see a validation error.
+    cfg = gemini_generation_config(model, max_tokens)
     if _service_tier():
         cfg["service_tier"] = _service_tier()
     resp = client.models.generate_content(

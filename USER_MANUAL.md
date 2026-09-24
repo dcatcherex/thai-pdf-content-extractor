@@ -153,13 +153,17 @@ What to look for:
 
 ### Step 4 — Run the extraction
 
-**Option A — Batch mode (cheapest, Anthropic only):**
+**Option A — Batch mode (cheapest: 50% off, Claude or Gemini):**
 
 ```bash
 python batch_extractor.py doc.pdf --out ./out_batch \
   --title "คู่มือผู้ดำเนินการฯ" \
   --publisher "กรมสนับสนุนบริการสุขภาพ" \
   --page-offset 9
+
+# same thing through the Gemini Batch API:
+python batch_extractor.py doc.pdf --provider gemini --out ./out_gemini \
+  --title "คู่มือผู้ดำเนินการฯ" --page-offset 9
 ```
 
 **Option B — Sync mode (live, any provider, can split cost):**
@@ -184,7 +188,14 @@ pages run in parallel, and rerun the same command to pick up any failed pages.
 
 ## 5. Batch mode — fire and forget
 
-Batch mode submits everything as one asynchronous job to Anthropic at **half price**. You don't have to sit and watch it.
+Batch mode submits everything as one asynchronous job at **half price**, to Anthropic by default or to Gemini with
+`--provider gemini`. You don't have to sit and watch it. The steps below are the same for both.
+
+**Gemini specifics:** the pages are written to one JSONL request file, uploaded (limit 2 GB, so no
+splitting is needed), and submitted as a single job. The job id is saved to `gemini_batch.json` right after it's created.
+This matters because Gemini creates and bills a *new* job every time you submit, so a rerun must never submit again.
+Results stay on Google's side for 6 weeks, and a local copy is saved as `gemini_results.jsonl`. A Gemini job that
+waits more than 48 hours expires, and its pages are listed under `expired` in `failed_pages.json`.
 
 ```bash
 # Tonight — submit and walk away:
@@ -333,7 +344,8 @@ The repeating footer (page number + book title + department) is **stripped from 
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--model` | `claude-sonnet-5` | Anthropic model to use |
+| `--provider` | `anthropic` | `anthropic` (Message Batches) or `gemini` (Gemini Batch API) |
+| `--model` | provider default | e.g. `claude-sonnet-5`, `gemini-3.8-flash` |
 | `--effort` | model default | `low`/`medium`/`high` — fewer output/thinking tokens at lower levels; test with `compare.py --effort` first |
 | `--no-wait` | off | Submit and exit; rerun later to retrieve |
 
@@ -384,3 +396,54 @@ The repeating footer (page number + book title + department) is **stripped from 
 Run `estimate_cost.py` to see the numbers, then `compare.py` to see the quality. The cheapest model that *actually transcribes your tables correctly* is the right answer — an empty table is worth nothing regardless of price. In practice, batch mode on a strong model for table-heavy sections plus a cheap model for plain prose usually beats picking one provider for everything.
 
 **Prompt caching doesn't help here.** Caching discounts a *repeated* prompt prefix, but each request is one unique page image plus a ~290-token instruction — below every provider's minimum cacheable length. It would only start paying off if you grew the prompt with worked examples (e.g. a few thousand tokens of sample Thai tables); caching and batch discounts stack, so that would stay cheap.
+
+---
+
+## 12. Web app for staff (`app.py`)
+
+A browser interface in Thai, so staff don't need the command line. Staff instructions are in
+`STAFF_GUIDE_TH.md`. This section is for whoever sets it up.
+
+### Set up (once, on one office computer or small server)
+
+```bash
+pip install -r requirements.txt       # includes streamlit
+# .env with the API keys, as in §2; check with: python check_keys.py --ping
+streamlit run app.py                   # or double-click start_app.bat
+```
+
+- `start_app.bat` listens on the office network (`--server.address 0.0.0.0`). Staff open
+  `http://<computer-name>:8501`. Allow port 8501 through the Windows firewall for the private
+  network only.
+- **There is no login.** Run it only on a trusted office network, and never expose it to the internet as-is.
+  The API keys stay on this machine; staff never see them.
+- The computer must stay on while "run now" jobs are working. Overnight (batch) jobs run on
+  Anthropic's servers, so only the final "check results" step needs the app.
+
+### What staff get
+
+| Step | What the app does |
+|---|---|
+| Quality | Three presets instead of model names: ประหยัด (`gemini-3.5-flash-lite`), มาตรฐาน (`claude-sonnet-5`), ละเอียดสูงสุด (`claude-opus-5-5`). Edit `PRESETS` in `jobs.py`, and check your choices with `compare.py`. |
+| Page offset | **Detected automatically.** The model reads the printed number on 5 sample pages and takes a majority vote. There is also a "check by eye" preview. |
+| Page selection | Whole book, or printed page numbers (`96, 120-150`) |
+| Cost | Estimated in **baht** before starting. Jobs over the budget limit can't be started. |
+| Run | "Run now" runs in the background with a live progress bar and pause/continue. "Overnight −50%" uses the Anthropic Batches API. |
+| Review | Automatic flags: tables with many empty cells, doubled Thai vowel/tone marks, pages not finished, and very short text. The page image is shown next to the text. Staff can edit and save, or re-read one page with a stronger preset. |
+| Download | A zip of `document.md`, `chunks.jsonl`, `document.json` and `figures/` |
+
+### Admin settings (menu "ตั้งค่า")
+
+These are saved to `app_settings.json`:
+- THB per USD. **Set this to the current rate**; the default of 33 is only a placeholder.
+- Budget limit per job.
+- Parallel pages per job.
+- DPI.
+
+### Where data goes
+
+Each job is a folder `jobs/<id>/` with `job.json`, `source.pdf`, `state.db` (resumable), optional
+`batch.json`, and `output/`. `jobs/` is in `.gitignore`. Delete old job folders to free space.
+If the server restarts, running jobs show "หยุดไว้" (stopped). "ทำต่อ" (continue) resumes, and finished pages are not
+billed again.
+

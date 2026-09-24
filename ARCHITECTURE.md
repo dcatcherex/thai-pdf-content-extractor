@@ -43,7 +43,10 @@ providers.py        Vision backends (anthropic/openai/gemini) behind one
 extractor.py        Sync mode. Per-page loop, SQLite checkpointing, retry.
                     Multi-provider. Live progress.
 
-batch_extractor.py  Batch mode. Anthropic Message Batches API (50% cost).
+batch_extractor.py  Batch mode (50% cost). --provider anthropic: Message Batches
+                    API (below). --provider gemini: delegates to gemini_batch.py.
+gemini_batch.py     Gemini Batch API: JSONL request file → Files API upload →
+                    one batches.create → poll → result JSONL matched by key.
                     Async submit (split across multiple batches if needed) →
                     poll → retrieve. batch.json checkpointing after each batch.
 
@@ -54,9 +57,31 @@ estimate_cost.py    Pre-flight cost estimate. Per-model image-token rules.
 
 check_keys.py       Shows which API key each provider will use (masked) and,
                     with --ping, tests each one with a free list-models call.
+
+app.py              Streamlit web UI (Thai) for staff. UI only — no extraction
+                    logic; calls jobs / offset_detect.
+jobs.py             Web-app back end: job folders (jobs/<id>/), background
+                    threads for "run now", batch submit/check, review actions
+                    (save_edit, redo_page), cost in baht, output zip, PRESETS.
+quality.py          Offline page checks → Thai review flags (empty-cell tables,
+                    doubled Thai marks, short text, failed/truncated).
+offset_detect.py    Automatic --page-offset: model reads printed numbers on
+                    sample pages, majority vote.
 ```
 
-**Dependency direction:** `extractor` / `batch_extractor` / `compare` / `estimate_cost` → `common` + `providers`. Nothing depends on the extractors. Keep it that way.
+**Dependency direction:** `extractor` / `batch_extractor` / `compare` / `estimate_cost` → `common` + `providers`. The web app adds one layer on top: `app` → `jobs` / `offset_detect` → `extractor` (reuses `vision_with_retry`, `record_result`, `assemble`), `batch_extractor`, `quality`, `estimate_cost`. The CLIs never import the web modules.
+
+**Per-call model:** backends take an optional `model=` keyword (`providers._model_for(provider,
+model)`: explicit > `EXTRACTOR_MODEL` env > default). The web app needs it because several jobs with
+different models run in one process, where one shared env var would clash. `extractor.call_vision`
+passes `model=` only when given, so 3-argument backends and test stubs still work.
+
+**Web app threading:** each "run now" job runs in its own daemon thread (`jobs._run`), which
+owns its SQLite connection and PyMuPDF document. API calls fan out to a small pool inside it; all DB
+writes stay on the job thread. The UI reads `state.db` through separate connections
+(`timeout=30`) and polls every 4 s (`st.fragment(run_every=...)`). A job whose thread is gone after a
+server restart is shown as `stopped` (`jobs.effective_status`) and resumes from `state.db`.
+`redo_page` never overwrites existing text with a failure.
 
 ---
 
@@ -233,6 +258,30 @@ An older `batch.json` with a single `"batch_id"` is transparently upgraded on lo
 
 ---
 
+### Gemini batch mode (`gemini_batch.py`)
+
+```
+if out/gemini_batch.json exists: check pages/dpi/model/pdf match → else exit non-zero
+                                 reuse batch_name (NEVER create again)
+else: render pages one at a time → gemini_requests.jsonl
+        {"key": "page_NNNN", "request": {contents: [inline_data image, PROMPT],
+                                         generation_config: providers.gemini_generation_config()}}
+      files.upload → batches.create(model, src=file) → write gemini_batch.json IMMEDIATELY
+   ↓ (unless --no-wait)
+poll batches.get until JOB_STATE_SUCCEEDED / FAILED / CANCELLED / EXPIRED
+   ↓
+files.download(dest.file_name) → gemini_results.jsonl (local copy)
+parse by "key" (never position): error line / missing line → errored,
+finishReason MAX_TOKENS → truncated, blank → empty, "thought" parts dropped
+   ↓
+batch_extractor._finish() → common.assemble_from_pages() + failed_pages.json
+```
+
+Unlike Anthropic, **Gemini's `batches.create` is not idempotent**, so the job name is persisted before
+anything else can fail. A single job is enough: the input file limit is 2 GB, against about 232 MB for the
+reference document at 200 DPI. The generation config (temperature 0, lowest thinking level,
+16k output ceiling) is shared with the live `call_gemini`, so the batch and live paths behave the same.
+
 ## 5. Page numbering: `pdf_index` vs `printed_page`
 
 Two different numbers, both needed, frequently conflated.
@@ -321,10 +370,13 @@ estimated range above. Providers only bill for tokens actually generated, so a g
 costs nothing extra on a typical page — it exists purely to stop a rare, unusually dense Thai table
 from hitting the ceiling and silently truncating (see §7).
 
-**Cheap paths (all ~50% off, `providers.BATCH_MULTIPLIER`):** Anthropic Message Batches
-(`batch_extractor.py`); OpenAI and Gemini **flex tier** (`extractor.py --service-tier flex`, billed at
-their batch prices, synchronous API but slow and sheddable — use `--workers`). OpenAI/Gemini batch
-APIs would cost the same as flex; they're not implemented because flex reuses the sync path.
+**Cheap paths (all ~50% off, `providers.BATCH_MULTIPLIER`):**
+- Anthropic Message Batches (`batch_extractor.py`).
+- Gemini Batch API (`batch_extractor.py --provider gemini`, or the web app's economy preset in overnight mode).
+- OpenAI and Gemini **flex tier** (`extractor.py --service-tier flex`). It's billed at batch prices and uses the synchronous
+  API, but it's slow and requests can be dropped, so use `--workers`.
+
+The OpenAI Batch API is not implemented; flex costs the same.
 
 **Prompt caching is deliberately not used.** Each request = one unique page image + a ~290-token
 instruction. There is no repeated prefix above any provider's minimum cacheable length, so caching
@@ -347,7 +399,7 @@ visible answer and needs testing (`compare.py --effort low`) before relying on i
 - Page-offset assumes constant numbering (see §5).
 - Output-token cost is an estimate.
 - `PRICING` and `DEFAULT_MODELS` are snapshots that drift as providers ship models.
-- Batch mode is Anthropic-only (OpenAI/Gemini get the same discount via `--service-tier flex`).
+- Batch mode covers Anthropic and Gemini. OpenAI gets the same discount through `--service-tier flex`.
 - Table transcription quality varies significantly by model — **the main quality risk.** Weaker models emit a table frame with empty cells. Always validate with `compare.py` on table-heavy pages before a full run.
 - Chunking is one-chunk-per-page. Fine as a baseline; semantic/section chunking would likely retrieve better.
 
@@ -363,7 +415,7 @@ visible answer and needs testing (`compare.py --effort low`) before relying on i
 
 ## 10. Testing notes
 
-There's a `unittest` suite in `tests/` (`test_fixes.py`, `test_models_and_tiers.py`; 36 tests). Run it from the tool's folder root:
+There's a `unittest` suite in `tests/` (`test_fixes.py`, `test_models_and_tiers.py`, `test_app.py`, `test_gemini_batch.py`; 51 tests). Run it from the tool's folder root:
 
 ```bash
 python3 -m unittest discover -s tests
@@ -392,6 +444,18 @@ client (plain objects, no `anthropic` import required). It covers:
   model is priced; per-model image-token rules; `compare` `provider:model` entries restore the env;
   `--workers` keeps DB writes on the main thread and isolates a failing page; flex is refused for
   Anthropic.
+- **Web app (`test_app.py`):** run-now job end to end (progress, flags, edit, redo, zip with
+  correct printed pages); failed redo keeps old text; stop then resume; baht estimate halves in
+  batch mode; restart → `stopped`; offset detection (majority vote, Thai digits, low-confidence);
+  batch job submit → check with out-of-order and truncated results; Streamlit `AppTest` renders the
+  review screen and saving an edit clears the flag.
+- **Gemini batch (`test_gemini_batch.py`, fake google-genai client):**
+  - JSONL line shape (inline image, thinking level).
+  - Result parsing: out of order, error lines, missing lines, `MAX_TOKENS`, blank output, thought parts dropped.
+  - `submit` never creates a second job.
+  - CLI `--no-wait` then resume with no resubmit.
+  - Parameter mismatch is refused.
+  - Web app economy preset, overnight: pending → done.
 - **Page selection:** `resolve_pages` (printed → pdf_index, ranges, bounds, missing offset);
   `compare --printed` end to end; `extractor --printed` processes only those pages;
   `batch_extractor --printed` submits only those pages.

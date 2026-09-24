@@ -74,20 +74,23 @@ def pending_pages(con):
 
 # ---------- vision call ----------
 
-def call_vision(img_b64: str, provider: str) -> str:
-    """Single vision call via the selected provider. Raises on failure."""
+def call_vision(img_b64: str, provider: str, model: str | None = None) -> str:
+    """Single vision call via the selected provider. Raises on failure.
+    `model` is only passed when given, so 3-argument backends still work."""
     backend = providers.get_backend(provider)
+    if model:
+        return backend(img_b64, PROMPT, MAX_TOKENS, model=model)
     return backend(img_b64, PROMPT, MAX_TOKENS)
 
 
-def vision_with_retry(img_b64, provider, page_no):
+def vision_with_retry(img_b64, provider, page_no, model=None):
     """Call the provider with retry. Touches no shared state, so it is safe to
     run in worker threads. Returns (markdown | None, attempts, error | None)."""
     attempt = 0
     while True:
         attempt += 1
         try:
-            return call_vision(img_b64, provider), attempt, None
+            return call_vision(img_b64, provider, model), attempt, None
         except (providers.TruncatedOutput, providers.EmptyOutput) as e:
             # Not transient: an immediate retry would just regenerate (and
             # re-bill) up to MAX_TOKENS of output again. Give up for this run;

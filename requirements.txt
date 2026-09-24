@@ -1,4 +1,5 @@
 pymupdf
+streamlit            # web app (app.py)
 python-dotenv
 # install only the providers you use:
 anthropic

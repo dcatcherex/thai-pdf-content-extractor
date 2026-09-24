@@ -23,3 +23,7 @@ failed_pages.json
 # Manual backups (git history replaces these)
 backup/
 *.zip
+
+# Web app data (uploaded PDFs, results, local settings)
+jobs/
+app_settings.json

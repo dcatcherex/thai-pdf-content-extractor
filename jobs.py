@@ -311,6 +311,20 @@ def _gemini():
     return providers.gemini_client()
 
 
+def _openai():
+    from openai import OpenAI
+    return OpenAI()
+
+
+def _file_batch(provider):
+    """(module, client, state file) for the JSONL-file batch providers."""
+    if provider == "gemini":
+        import gemini_batch
+        return gemini_batch, _gemini(), "gemini_batch.json"
+    import openai_batch
+    return openai_batch, _openai(), "openai_batch.json"
+
+
 def submit_batch(job_id: str):
     if is_running(job_id):
         return
@@ -321,10 +335,11 @@ def submit_batch(job_id: str):
         job = update_job(job_id, status="submitting", error=None)
         try:
             doc = fitz.open(job_dir(job_id) / "source.pdf")
-            if job["provider"] == "gemini":
-                gemini_batch.submit(_gemini(), doc, job["pages"], job["dpi"],
-                                    job["model"], job_dir(job_id), "source.pdf",
-                                    (job_dir(job_id) / "source.pdf").stat().st_size)
+            if job["provider"] in ("gemini", "openai"):
+                mod, client, _ = _file_batch(job["provider"])
+                mod.submit(client, doc, job["pages"], job["dpi"],
+                           job["model"], job_dir(job_id), "source.pdf",
+                           (job_dir(job_id) / "source.pdf").stat().st_size)
                 update_job(job_id, status="submitted")
                 return
             state_path = job_dir(job_id) / "batch.json"
@@ -362,6 +377,19 @@ def check_batch(job_id: str) -> str:
         pages, errored, expired, truncated, empty = gemini_batch.collect(
             client, state, doc, fig_dir, job_dir(job_id))
         provider_tag = "gemini-batch"
+    elif job["provider"] == "openai":
+        import openai_batch
+        client = _openai()
+        state = openai_batch.load_state(job_dir(job_id) / "openai_batch.json")
+        st = openai_batch.statuses(client, state)
+        waiting = [s for s in st.values() if s not in openai_batch.DONE]
+        if waiting:
+            return (f"ยังประมวลผลอยู่ ({len(st) - len(waiting)}/{len(st)} ชุดเสร็จแล้ว) "
+                    "ลองตรวจสอบอีกครั้งภายหลัง")
+        doc, con = _open(job)
+        pages, errored, expired, truncated, empty = openai_batch.collect(
+            client, state, doc, fig_dir, job_dir(job_id))
+        provider_tag = "openai-batch"
     else:
         state = batch_extractor._load_state(job_dir(job_id) / "batch.json")
         client = _anthropic()

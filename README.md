@@ -45,7 +45,7 @@ with the page image, fix or re-read those pages, and download a zip. The Thai in
 | `estimate_cost.py` | Price a run before committing |
 | `compare.py` | Compare provider quality side by side |
 | `extractor.py` | Sync extraction; multi-provider; resumable |
-| `batch_extractor.py` | Async batch extraction at **50% cost** (Anthropic, or Gemini with `--provider gemini`) |
+| `batch_extractor.py` | Async batch extraction at **50% cost** (Anthropic by default; `--provider gemini` or `--provider openai`) |
 | `common.py` | Shared prompt, assembly, metadata, `.env` |
 | `providers.py` | Vision backends + pricing table |
 | `check_keys.py` | Show / test which API key each provider uses |

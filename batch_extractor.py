@@ -241,9 +241,9 @@ def main():
     ap.add_argument("--pages", default="",
                     help="pdf_index pages (0-based = viewer page - 1), e.g. "
                          "'0-199' or '2,105,180-182'")
-    ap.add_argument("--provider", default="anthropic", choices=["anthropic", "gemini"],
-                    help="anthropic = Message Batches; gemini = Gemini Batch API "
-                         "(both 50%% off)")
+    ap.add_argument("--provider", default="anthropic",
+                    choices=["anthropic", "gemini", "openai"],
+                    help="which provider's Batch API to use (all 50%% off)")
     ap.add_argument("--model", default="",
                     help="model ID (default: the provider's default in providers.py)")
     ap.add_argument("--effort", default="", choices=["", "low", "medium", "high"],
@@ -257,8 +257,8 @@ def main():
     global EFFORT
     EFFORT = args.effort or None
     args.model = args.model or DEFAULT_MODELS[args.provider]
-    if args.provider == "gemini":
-        return _main_gemini(args)
+    if args.provider in ("gemini", "openai"):
+        return _main_file_batch(args)
 
     from anthropic import Anthropic
     client = Anthropic()  # reads ANTHROPIC_API_KEY (from .env via load_env)
@@ -320,40 +320,48 @@ def main():
             truncated, empty)
 
 
-def _main_gemini(args):
+def _main_file_batch(args):
+    """Gemini and OpenAI batch paths: both build JSONL request files, upload
+    them, and match results by key. See gemini_batch.py / openai_batch.py."""
     import os
-    import gemini_batch
+    if args.provider == "gemini":
+        import gemini_batch as mod
+        client, state_name, label = providers.gemini_client(), "gemini_batch.json", "Gemini"
+    else:
+        import openai_batch as mod
+        from openai import OpenAI
+        client, state_name, label = OpenAI(), "openai_batch.json", "OpenAI"
     if args.effort:
-        os.environ["EXTRACTOR_EFFORT"] = args.effort   # → Gemini thinking_level
-    client = providers.gemini_client()
+        os.environ["EXTRACTOR_EFFORT"] = args.effort
     pdf_path = Path(args.pdf)
     out_dir = Path(args.out); out_dir.mkdir(parents=True, exist_ok=True)
     fig_dir = out_dir / "figures"; fig_dir.mkdir(exist_ok=True)
     doc = fitz.open(pdf_path)
     n_pages = len(doc)
     pages = common.resolve_pages(args.pages, args.printed, args.page_offset, n_pages)
-    state_path = out_dir / "gemini_batch.json"
+    state_path = out_dir / state_name
 
-    state = gemini_batch.load_state(state_path)
+    state = mod.load_state(state_path)
     if state:
         if not _check_resume_matches(state, pages, args.dpi, args.model, pdf_path):
             sys.exit(1)
-        print(f"Resuming existing Gemini batch {state['batch_name']} "
-              f"(submitted {state.get('submitted_at', '?')}).")
+        print(f"Resuming existing {label} batch job (submitted "
+              f"{state.get('submitted_at', '?')}); nothing is resubmitted.")
     else:
         print(f"Submitting {len(pages)} pages via {args.model} "
-              f"(Gemini Batch API, 50% pricing)...")
-        state = gemini_batch.submit(client, doc, pages, args.dpi, args.model,
-                                    out_dir, pdf_path.name, pdf_path.stat().st_size)
-        print(f"Submitted 1 batch: {state['batch_name']}\nSaved to {state_path}")
+              f"({label} Batch API, 50% pricing)...")
+    # submit() is safe to call again: it only sends pages not yet submitted
+    state = mod.submit(client, doc, pages, args.dpi, args.model, out_dir,
+                       pdf_path.name, pdf_path.stat().st_size)
+    print(f"Batch state saved to {state_path}")
 
     if args.no_wait:
         print("--no-wait set; exiting. Rerun the same command to retrieve.")
         return
-    print("Polling for completion (target < 24 h, usually much faster)...")
-    final = gemini_batch.wait(client, state)
+    print("Polling for completion (up to 24 h, usually much faster)...")
+    final = mod.wait(client, state)
     print(f"Batch finished: {final}. Retrieving results...")
-    page_recs, errored, expired, truncated, empty = gemini_batch.collect(
+    page_recs, errored, expired, truncated, empty = mod.collect(
         client, state, doc, fig_dir, out_dir)
     _finish(args, out_dir, n_pages, pages, page_recs, errored, expired,
             truncated, empty)

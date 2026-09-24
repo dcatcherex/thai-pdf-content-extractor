@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-09-24 (j): OpenAI Batch API (50% off). All three providers now have a batch mode.
+Pre-change copy: `backup/ver12_before_openai_batch/`. Tests: 58, all passing (fake client; no real API call yet).
+- **New `openai_batch.py`:**
+  - Builds JSONL `/v1/chat/completions` requests, using the same body as the live call.
+  - **Splits automatically** at 180 MB per file, because OpenAI's limit is 200 MB or 50,000 requests and your manual at 200 DPI
+    is about 232 MB.
+  - Creates one batch per file, saving `openai_batch.json` after each one. A crash in the middle only submits the missing pages.
+  - Polls until every batch is completed, failed, expired or cancelled.
+  - Reads both the output and error files and matches results **by `custom_id`**. Error lines go to `errored`, `batch_expired`
+    goes to `expired`, a `length` finish goes to `truncated`, and blank output goes to `empty`. An expired batch still returns
+    its finished pages.
+- **`batch_extractor.py --provider openai`:** the Gemini and OpenAI paths share `_main_file_batch()`, with the same resume
+  behavior, mismatch check, `failed_pages.json` and outputs as the Claude path.
+- **Web app:** any preset whose provider is OpenAI can now run overnight too. "ตรวจสอบผล" shows how many batches have finished.
+- Docs updated: README, USER_MANUAL (Option A, §5 OpenAI specifics, flags, §12) and ARCHITECTURE (module map, data flow, cost paths, tests).
+
 ## 2026-09-24 (i): Gemini Batch API (50% off)
 Pre-change copy: `backup/ver11_before_gemini_batch/`. Tests: 51, all passing (fake client; no real API call yet).
 - **New `gemini_batch.py`:**

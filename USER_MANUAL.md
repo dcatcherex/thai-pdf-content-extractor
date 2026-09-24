@@ -153,7 +153,7 @@ What to look for:
 
 ### Step 4 — Run the extraction
 
-**Option A — Batch mode (cheapest: 50% off, Claude or Gemini):**
+**Option A — Batch mode (cheapest: 50% off, Claude, Gemini or OpenAI):**
 
 ```bash
 python batch_extractor.py doc.pdf --out ./out_batch \
@@ -161,8 +161,10 @@ python batch_extractor.py doc.pdf --out ./out_batch \
   --publisher "กรมสนับสนุนบริการสุขภาพ" \
   --page-offset 9
 
-# same thing through the Gemini Batch API:
+# same thing through the Gemini or OpenAI Batch API:
 python batch_extractor.py doc.pdf --provider gemini --out ./out_gemini \
+  --title "คู่มือผู้ดำเนินการฯ" --page-offset 9
+python batch_extractor.py doc.pdf --provider openai --out ./out_openai \
   --title "คู่มือผู้ดำเนินการฯ" --page-offset 9
 ```
 
@@ -196,6 +198,13 @@ splitting is needed), and submitted as a single job. The job id is saved to `gem
 This matters because Gemini creates and bills a *new* job every time you submit, so a rerun must never submit again.
 Results stay on Google's side for 6 weeks, and a local copy is saved as `gemini_results.jsonl`. A Gemini job that
 waits more than 48 hours expires, and its pages are listed under `expired` in `failed_pages.json`.
+
+**OpenAI specifics:** each input file is capped at 200 MB and 50,000 requests, so a large document is
+automatically split into several batches (about 180 MB each). `openai_batch.json` is saved after each batch is created,
+so a crash partway through only submits the missing pages. Each batch has a 24-hour window. An
+expired batch still returns the pages it finished, and the rest are listed under `expired`. Results
+stay downloadable for 30 days, and local copies are saved as `openai_results_<batch>.jsonl`. Check that
+your model supports the Batch API; most OpenAI models do.
 
 ```bash
 # Tonight — submit and walk away:
@@ -344,7 +353,7 @@ The repeating footer (page number + book title + department) is **stripped from 
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--provider` | `anthropic` | `anthropic` (Message Batches) or `gemini` (Gemini Batch API) |
+| `--provider` | `anthropic` | `anthropic` (Message Batches), `gemini` or `openai` (their Batch APIs) |
 | `--model` | provider default | e.g. `claude-sonnet-5`, `gemini-3.8-flash` |
 | `--effort` | model default | `low`/`medium`/`high` — fewer output/thinking tokens at lower levels; test with `compare.py --effort` first |
 | `--no-wait` | off | Submit and exit; rerun later to retrieve |
@@ -428,7 +437,7 @@ streamlit run app.py                   # or double-click start_app.bat
 | Page offset | **Detected automatically.** The model reads the printed number on 5 sample pages and takes a majority vote. There is also a "check by eye" preview. |
 | Page selection | Whole book, or printed page numbers (`96, 120-150`) |
 | Cost | Estimated in **baht** before starting. Jobs over the budget limit can't be started. |
-| Run | "Run now" runs in the background with a live progress bar and pause/continue. "Overnight −50%" uses the Anthropic Batches API. |
+| Run | "Run now" runs in the background with a live progress bar and pause/continue. "Overnight −50%" uses the preset provider's Batch API (Anthropic, Gemini or OpenAI). |
 | Review | Automatic flags: tables with many empty cells, doubled Thai vowel/tone marks, pages not finished, and very short text. The page image is shown next to the text. Staff can edit and save, or re-read one page with a stronger preset. |
 | Download | A zip of `document.md`, `chunks.jsonl`, `document.json` and `figures/` |
 

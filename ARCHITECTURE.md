@@ -44,9 +44,13 @@ extractor.py        Sync mode. Per-page loop, SQLite checkpointing, retry.
                     Multi-provider. Live progress.
 
 batch_extractor.py  Batch mode (50% cost). --provider anthropic: Message Batches
-                    API (below). --provider gemini: delegates to gemini_batch.py.
+                    API (below). --provider gemini / openai: _main_file_batch()
+                    delegates to gemini_batch.py / openai_batch.py.
 gemini_batch.py     Gemini Batch API: JSONL request file → Files API upload →
                     one batches.create → poll → result JSONL matched by key.
+openai_batch.py     OpenAI Batch API: JSONL files split at 180 MB (limit 200 MB /
+                    50k requests) → files.create(purpose=batch) → one batch per
+                    file → output + error files matched by custom_id.
                     Async submit (split across multiple batches if needed) →
                     poll → retrieve. batch.json checkpointing after each batch.
 
@@ -282,6 +286,19 @@ anything else can fail. A single job is enough: the input file limit is 2 GB, ag
 reference document at 200 DPI. The generation config (temperature 0, lowest thinking level,
 16k output ceiling) is shared with the live `call_gemini`, so the batch and live paths behave the same.
 
+### OpenAI batch mode (`openai_batch.py`)
+
+Same shape as Gemini, with two differences:
+1. **Splitting.** The input file limit is 200 MB and 50,000 requests, and a large book at 200 DPI exceeds that.
+   `submit()` writes lines until the next line would pass `MAX_FILE_BYTES` (180 MB, measured on the actual
+   JSON bytes), then uploads that file and creates its batch. `openai_batch.json` is saved after each
+   batch, and `submit()` skips pages already recorded, so a crash in the middle only submits what's missing.
+2. **Two result files.** `output_file_id` holds the successes and `error_file_id` holds the failures
+   (including `batch_expired`). Lines are matched by `custom_id`, because order isn't guaranteed. A page with no
+   line counts as `expired` if its batch expired and `errored` otherwise. A `failed` batch (input validation)
+   marks all its pages as errored. Requests use the same body as `call_openai`
+   (`max_completion_tokens`, plus `reasoning_effort` only when `--effort` is given).
+
 ## 5. Page numbering: `pdf_index` vs `printed_page`
 
 Two different numbers, both needed, frequently conflated.
@@ -372,11 +389,10 @@ from hitting the ceiling and silently truncating (see §7).
 
 **Cheap paths (all ~50% off, `providers.BATCH_MULTIPLIER`):**
 - Anthropic Message Batches (`batch_extractor.py`).
-- Gemini Batch API (`batch_extractor.py --provider gemini`, or the web app's economy preset in overnight mode).
+- Gemini and OpenAI Batch APIs (`batch_extractor.py --provider gemini|openai`, or any web-app preset in overnight mode).
 - OpenAI and Gemini **flex tier** (`extractor.py --service-tier flex`). It's billed at batch prices and uses the synchronous
   API, but it's slow and requests can be dropped, so use `--workers`.
 
-The OpenAI Batch API is not implemented; flex costs the same.
 
 **Prompt caching is deliberately not used.** Each request = one unique page image + a ~290-token
 instruction. There is no repeated prefix above any provider's minimum cacheable length, so caching
@@ -399,7 +415,7 @@ visible answer and needs testing (`compare.py --effort low`) before relying on i
 - Page-offset assumes constant numbering (see §5).
 - Output-token cost is an estimate.
 - `PRICING` and `DEFAULT_MODELS` are snapshots that drift as providers ship models.
-- Batch mode covers Anthropic and Gemini. OpenAI gets the same discount through `--service-tier flex`.
+- Batch mode covers all three providers (Anthropic, Gemini, OpenAI).
 - Table transcription quality varies significantly by model — **the main quality risk.** Weaker models emit a table frame with empty cells. Always validate with `compare.py` on table-heavy pages before a full run.
 - Chunking is one-chunk-per-page. Fine as a baseline; semantic/section chunking would likely retrieve better.
 
@@ -415,7 +431,7 @@ visible answer and needs testing (`compare.py --effort low`) before relying on i
 
 ## 10. Testing notes
 
-There's a `unittest` suite in `tests/` (`test_fixes.py`, `test_models_and_tiers.py`, `test_app.py`, `test_gemini_batch.py`; 51 tests). Run it from the tool's folder root:
+There's a `unittest` suite in `tests/` (`test_fixes.py`, `test_models_and_tiers.py`, `test_app.py`, `test_gemini_batch.py`, `test_openai_batch.py`; 58 tests). Run it from the tool's folder root:
 
 ```bash
 python3 -m unittest discover -s tests
@@ -456,6 +472,14 @@ client (plain objects, no `anthropic` import required). It covers:
   - CLI `--no-wait` then resume with no resubmit.
   - Parameter mismatch is refused.
   - Web app economy preset, overnight: pending → done.
+- **OpenAI batch (`test_openai_batch.py`, fake openai client):**
+  - Request line shape (`max_completion_tokens`, `reasoning_effort` only with `--effort`).
+  - Result parsing: 200 vs 400, `length`, blank output, `batch_expired`.
+  - Splitting into several files, each saved to state, with no re-creation on rerun.
+  - Crash-resume submits only the missing pages.
+  - An expired batch with partial output, and a failed batch.
+  - CLI `--no-wait` then retrieve.
+  - Web-app overnight job with an OpenAI preset.
 - **Page selection:** `resolve_pages` (printed → pdf_index, ranges, bounds, missing offset);
   `compare --printed` end to end; `extractor --printed` processes only those pages;
   `batch_extractor --printed` submits only those pages.
